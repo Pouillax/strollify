@@ -1,15 +1,22 @@
 {
   "expo": {
-    "name": "walfiky",
-    "slug": "walfiky",
+    "name": "Walkify",
+    "slug": "walkify",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
-    "scheme": "walfiky",
+    "scheme": "walkify",
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": false,
+      "config": {
+        "googleMapsApiKey": "${EXPO_PUBLIC_GOOGLE_MAPS_API_KEY}"
+      },
+      "infoPlist": {
+        "NSLocationWhenInUseUsageDescription": "Walkify utilise votre position pour générer des parcours de marche autour de vous.",
+        "NSLocationAlwaysUsageDescription": "Walkify utilise votre position pour suivre votre marche."
+      }
     },
     "android": {
       "adaptiveIcon": {
@@ -19,7 +26,16 @@
         "monochromeImage": "./assets/images/android-icon-monochrome.png"
       },
       "edgeToEdgeEnabled": true,
-      "predictiveBackGestureEnabled": false
+      "predictiveBackGestureEnabled": false,
+      "config": {
+        "googleMaps": {
+          "apiKey": "${EXPO_PUBLIC_GOOGLE_MAPS_API_KEY}"
+        }
+      },
+      "permissions": [
+        "ACCESS_FINE_LOCATION",
+        "ACCESS_COARSE_LOCATION"
+      ]
     },
     "web": {
       "output": "static",
@@ -27,6 +43,12 @@
     },
     "plugins": [
       "expo-router",
+      [
+        "expo-location",
+        {
+          "locationAlwaysAndWhenInUsePermission": "Walkify utilise votre position pour générer et suivre vos parcours de marche."
+        }
+      ],
       [
         "expo-splash-screen",
         {
