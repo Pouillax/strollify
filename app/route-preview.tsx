@@ -33,7 +33,7 @@ function getBoundingRegion(route: WalkRoute) {
 
 export default function RoutePreviewScreen() {
   const router = useRouter();
-  const params = useLocalSearchParams<{ route: string; config: string; reasoning: string }>();
+  const params = useLocalSearchParams<{ route: string; config: string; reasoning: string; routeName?: string }>();
   const mapRef = useRef<MapView>(null);
 
   const route: WalkRoute = JSON.parse(params.route);
@@ -139,7 +139,7 @@ export default function RoutePreviewScreen() {
           onPress={() =>
             router.push({
               pathname: '/walk',
-              params: { route: params.route, config: params.config },
+              params: { route: params.route, config: params.config, routeName: params.routeName ?? '' },
             })
           }
         >

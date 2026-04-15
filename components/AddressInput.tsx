@@ -12,8 +12,9 @@ import { Colors, Radii, Shadows } from '@/constants/theme';
 import {
   AutocompleteSuggestion,
   getAddressSuggestions,
-  getPlaceCoordinates,
 } from '@/services/google-maps';
+import { geocodeAddress } from '@/services/location';
+
 import { Coordinates } from '@/types';
 
 interface AddressInputProps {
@@ -53,7 +54,8 @@ export default function AddressInput({
   const handleSelect = useCallback(async (suggestion: AutocompleteSuggestion) => {
     setSuggestions([]);
     onChangeText(suggestion.description);
-    const coords = await getPlaceCoordinates(suggestion.placeId);
+    // geocodeAddress utilise expo-location (Nominatim/Apple Maps) — gratuit, 0 appel Google
+    const coords = await geocodeAddress(suggestion.description);
     if (coords) onSelectPlace(suggestion.description, coords);
   }, [onChangeText, onSelectPlace]);
 
@@ -129,6 +131,7 @@ const styles = StyleSheet.create({
     borderColor: Colors.border,
     ...Shadows.md,
     zIndex: 20,
+    elevation: 20,
   },
   suggestion: {
     paddingHorizontal: 14,

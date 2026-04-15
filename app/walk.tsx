@@ -1,6 +1,6 @@
 import * as Location from 'expo-location';
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   Alert,
   Pressable,
@@ -12,9 +12,10 @@ import MapView, { Circle, Marker, Polyline, PROVIDER_GOOGLE } from 'react-native
 
 import { POI_CATEGORIES } from '@/constants/poi-categories';
 import { Colors, Radii, Shadows } from '@/constants/theme';
-import { Coordinates, WalkConfig, WalkRoute } from '@/types';
+import { computePersonalCadence, getWalks, saveWalk } from '@/services/history';
+import { Coordinates, WalkConfig, WalkRecord, WalkRoute } from '@/types';
 
-const STEP_LENGTH = 0.75; // mètres par pas
+const DEFAULT_STEP_LENGTH = 0.75; // mètres par pas (plancher de base)
 
 function distanceBetween(a: Coordinates, b: Coordinates): number {
   const R = 6371000;
@@ -30,7 +31,7 @@ function distanceBetween(a: Coordinates, b: Coordinates): number {
 
 export default function WalkScreen() {
   const router = useRouter();
-  const params = useLocalSearchParams<{ route: string; config: string }>();
+  const params = useLocalSearchParams<{ route: string; config: string; routeName?: string }>();
   const mapRef = useRef<MapView>(null);
 
   const route: WalkRoute = JSON.parse(params.route);
@@ -45,11 +46,20 @@ export default function WalkScreen() {
 
   const lastPosRef = useRef<Coordinates>(config.startCoordinates);
   const distanceRef = useRef(0);
+  const stepsRef = useRef(0);
+  const visitedPoisRef = useRef<Set<string>>(new Set());
   const startTimeRef = useRef(Date.now());
+  const stepLengthRef = useRef(DEFAULT_STEP_LENGTH); // mètres par pas, mis à jour au mount
   const locationSubRef = useRef<Location.LocationSubscription | null>(null);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   useEffect(() => {
+    // Charger la cadence personnalisée avant de démarrer
+    getWalks().then(walks => {
+      const cadence = computePersonalCadence(walks); // pas/mètre
+      stepLengthRef.current = 1 / cadence; // mètres/pas
+    });
+
     timerRef.current = setInterval(() => {
       setElapsedSeconds(Math.floor((Date.now() - startTimeRef.current) / 1000));
     }, 1000);
@@ -65,16 +75,18 @@ export default function WalkScreen() {
           const delta = distanceBetween(lastPosRef.current, newPos);
           lastPosRef.current = newPos;
           distanceRef.current += delta;
+          stepsRef.current += Math.round(delta / stepLengthRef.current);
           setCurrentPos(newPos);
           setDistanceWalked(distanceRef.current);
-          setStepsWalked(prev => prev + Math.round(delta / STEP_LENGTH));
+          setStepsWalked(stepsRef.current);
 
           mapRef.current?.animateCamera({ center: newPos, zoom: 17 });
 
           // Vérifie si on est proche d'un POI (rayon 30m)
           route.waypoints.forEach(poi => {
             if (distanceBetween(newPos, poi.coordinates) < 30) {
-              setVisitedPois(prev => new Set(prev).add(poi.id));
+              visitedPoisRef.current.add(poi.id);
+              setVisitedPois(new Set(visitedPoisRef.current));
             }
           });
 
@@ -93,16 +105,33 @@ export default function WalkScreen() {
     };
   }, []);
 
+  const handleFinish = useCallback(async () => {
+    const record: WalkRecord = {
+      id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
+      savedAt: new Date().toISOString(),
+      routeName: params.routeName ?? 'Promenade',
+      stepsWalked: stepsRef.current,
+      distanceMeters: distanceRef.current,
+      durationSeconds: Math.floor((Date.now() - startTimeRef.current) / 1000),
+      poisVisited: visitedPoisRef.current.size,
+      totalPois: route.waypoints.length,
+      config,
+      route,
+    };
+    try { await saveWalk(record); } catch {}
+    router.replace('/');
+  }, [route, config, params.routeName, router]);
+
   const handleStop = () => {
     Alert.alert('Terminer la promenade ?', '', [
       { text: 'Continuer', style: 'cancel' },
       {
         text: 'Terminer',
         style: 'destructive',
-        onPress: () => {
+        onPress: async () => {
           locationSubRef.current?.remove();
           if (timerRef.current) clearInterval(timerRef.current);
-          router.replace('/');
+          await handleFinish();
         },
       },
     ]);
@@ -197,7 +226,7 @@ export default function WalkScreen() {
             <Text style={styles.finishedTitle}>Promenade terminée !</Text>
             <Text style={styles.finishedStat}>{stepsWalked.toLocaleString()} pas · {(distanceWalked / 1000).toFixed(2)} km · {formatTime(elapsedSeconds)}</Text>
             <Text style={styles.finishedStat}>{visitedPois.size}/{route.waypoints.length} lieux visités</Text>
-            <Pressable style={styles.finishedBtn} onPress={() => router.replace('/')}>
+            <Pressable style={styles.finishedBtn} onPress={handleFinish}>
               <Text style={styles.finishedBtnText}>Retour à l'accueil</Text>
             </Pressable>
           </View>

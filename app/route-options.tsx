@@ -1,71 +1,86 @@
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import React, { useState } from 'react';
 import {
+  ActivityIndicator,
+  Alert,
   Pressable,
   ScrollView,
   StyleSheet,
   Text,
   View,
 } from 'react-native';
-import MapView, { Polyline, PROVIDER_GOOGLE } from 'react-native-maps';
+import MapView, { Marker, PROVIDER_GOOGLE } from 'react-native-maps';
 
 import { POI_CATEGORIES } from '@/constants/poi-categories';
 import { Colors, Radii, Shadows } from '@/constants/theme';
-import { RouteOption, WalkConfig } from '@/types';
+import { estimateProposal, resolveRoute } from '@/services/ai';
+import { RouteProposal, WalkConfig } from '@/types';
 
-function getBoundingRegion(option: RouteOption) {
-  const coords = option.route.polylinePoints;
-  if (coords.length === 0) return null;
+function getBoundingRegion(proposal: RouteProposal, startCoords: { latitude: number; longitude: number }) {
+  const coords = [startCoords, ...proposal.waypoints.map(w => w.coordinates)];
   const lats = coords.map(c => c.latitude);
   const lngs = coords.map(c => c.longitude);
   const minLat = Math.min(...lats);
   const maxLat = Math.max(...lats);
   const minLng = Math.min(...lngs);
   const maxLng = Math.max(...lngs);
-  const padding = 0.004;
+  const padding = 0.008;
   return {
     latitude: (minLat + maxLat) / 2,
     longitude: (minLng + maxLng) / 2,
-    latitudeDelta: maxLat - minLat + padding,
-    longitudeDelta: maxLng - minLng + padding,
+    latitudeDelta: Math.max(maxLat - minLat + padding, 0.02),
+    longitudeDelta: Math.max(maxLng - minLng + padding, 0.02),
   };
 }
 
-function RouteCard({
-  option,
+function ProposalCard({
+  proposal,
   index,
   selected,
+  config,
   onPress,
 }: {
-  option: RouteOption;
+  proposal: RouteProposal;
   index: number;
   selected: boolean;
+  config: WalkConfig;
   onPress: () => void;
 }) {
-  const region = getBoundingRegion(option);
+  const region = getBoundingRegion(proposal, config.startCoordinates);
+  const estimate = estimateProposal(proposal, config);
 
   return (
     <Pressable
       style={[styles.card, selected && styles.cardSelected]}
       onPress={onPress}
     >
-      {/* Mini carte */}
+      {/* Mini carte — markers uniquement, 0 Routes API */}
       <View style={styles.miniMapContainer}>
         <MapView
           style={styles.miniMap}
           provider={PROVIDER_GOOGLE}
-          initialRegion={region ?? undefined}
+          initialRegion={region}
           scrollEnabled={false}
           zoomEnabled={false}
           rotateEnabled={false}
           pitchEnabled={false}
           pointerEvents="none"
+          liteMode
         >
-          <Polyline
-            coordinates={option.route.polylinePoints}
-            strokeColor={selected ? Colors.primary : Colors.primaryBorder}
-            strokeWidth={3}
-          />
+          {proposal.waypoints.map(poi => {
+            const cat = POI_CATEGORIES.find(c => c.id === poi.category);
+            return (
+              <Marker
+                key={poi.id}
+                coordinate={poi.coordinates}
+                title={poi.name}
+              >
+                <View style={[styles.poiMarker, selected && styles.poiMarkerSelected]}>
+                  <Text style={styles.poiMarkerIcon}>{cat?.icon ?? '📍'}</Text>
+                </View>
+              </Marker>
+            );
+          })}
         </MapView>
         <View style={[styles.indexBadge, selected && styles.indexBadgeSelected]}>
           <Text style={[styles.indexBadgeText, selected && styles.indexBadgeTextSelected]}>
@@ -82,28 +97,28 @@ function RouteCard({
       {/* Infos */}
       <View style={styles.cardContent}>
         <Text style={[styles.cardName, selected && styles.cardNameSelected]} numberOfLines={1}>
-          {option.name}
+          {proposal.name}
         </Text>
 
         <View style={styles.statsRow}>
           <View style={styles.statPill}>
-            <Text style={styles.statText}>🚶 {option.route.estimatedSteps.toLocaleString()} pas</Text>
+            <Text style={styles.statText}>📍 {(estimate.distanceMeters / 1000).toFixed(1)} km</Text>
           </View>
           <View style={styles.statPill}>
-            <Text style={styles.statText}>📍 {(option.route.totalDistanceMeters / 1000).toFixed(1)} km</Text>
+            <Text style={styles.statText}>⏱ ~{estimate.durationMinutes} min</Text>
           </View>
           <View style={styles.statPill}>
-            <Text style={styles.statText}>⏱ {option.route.durationMinutes} min</Text>
+            <Text style={styles.statText}>🚶 {proposal.waypoints.length} lieu{proposal.waypoints.length > 1 ? 'x' : ''}</Text>
           </View>
         </View>
 
         <Text style={styles.reasoning} numberOfLines={selected ? undefined : 2}>
-          {option.reasoning}
+          {proposal.reasoning}
         </Text>
 
         {/* POI chips */}
         <View style={styles.poiRow}>
-          {option.route.waypoints.slice(0, 4).map(poi => {
+          {proposal.waypoints.slice(0, 4).map(poi => {
             const cat = POI_CATEGORIES.find(c => c.id === poi.category);
             return (
               <View key={poi.id} style={[styles.poiChip, selected && styles.poiChipSelected]}>
@@ -122,21 +137,32 @@ function RouteCard({
 
 export default function RouteOptionsScreen() {
   const router = useRouter();
-  const params = useLocalSearchParams<{ options: string; config: string }>();
-  const options: RouteOption[] = JSON.parse(params.options);
+  const params = useLocalSearchParams<{ proposals: string; config: string }>();
+  const proposals: RouteProposal[] = JSON.parse(params.proposals);
   const config: WalkConfig = JSON.parse(params.config);
   const [selectedIndex, setSelectedIndex] = useState(0);
+  const [resolving, setResolving] = useState(false);
 
-  const handleStart = () => {
-    const chosen = options[selectedIndex];
-    router.push({
-      pathname: '/route-preview',
-      params: {
-        route: JSON.stringify(chosen.route),
-        config: params.config,
-        reasoning: chosen.reasoning,
-      },
-    });
+  const handleStart = async () => {
+    const chosen = proposals[selectedIndex];
+    setResolving(true);
+    try {
+      // 1 seul appel Routes API ici, au moment de la confirmation
+      const resolved = await resolveRoute(chosen, config);
+      router.push({
+        pathname: '/route-preview',
+        params: {
+          route: JSON.stringify(resolved.route),
+          config: params.config,
+          reasoning: resolved.reasoning,
+          routeName: resolved.name,
+        },
+      });
+    } catch (err: any) {
+      Alert.alert('Erreur', err.message ?? 'Impossible de calculer cet itinéraire.');
+    } finally {
+      setResolving(false);
+    }
   };
 
   return (
@@ -147,7 +173,7 @@ export default function RouteOptionsScreen() {
         </Pressable>
         <Text style={styles.headerTitle}>Choisissez votre promenade</Text>
         <Text style={styles.headerSub}>
-          {options.length} parcours générés · {config.steps.toLocaleString()} pas
+          {proposals.length} parcours proposés · {config.steps.toLocaleString()} pas
         </Text>
       </View>
 
@@ -155,20 +181,28 @@ export default function RouteOptionsScreen() {
         contentContainerStyle={styles.scrollContent}
         showsVerticalScrollIndicator={false}
       >
-        {options.map((option, index) => (
-          <RouteCard
+        {proposals.map((proposal, index) => (
+          <ProposalCard
             key={index}
-            option={option}
+            proposal={proposal}
             index={index}
             selected={selectedIndex === index}
+            config={config}
             onPress={() => setSelectedIndex(index)}
           />
         ))}
       </ScrollView>
 
       <View style={styles.footer}>
-        <Pressable style={styles.startBtn} onPress={handleStart}>
-          <Text style={styles.startBtnText}>Voir ce parcours en détail</Text>
+        <Pressable
+          style={[styles.startBtn, resolving && styles.startBtnDisabled]}
+          onPress={handleStart}
+          disabled={resolving}
+        >
+          {resolving
+            ? <ActivityIndicator color="#fff" />
+            : <Text style={styles.startBtnText}>Voir ce parcours en détail</Text>
+          }
         </Pressable>
       </View>
     </View>
@@ -214,6 +248,19 @@ const styles = StyleSheet.create({
   miniMapContainer: { height: 150, position: 'relative' },
   miniMap: { ...StyleSheet.absoluteFillObject },
 
+  poiMarker: {
+    backgroundColor: Colors.card,
+    borderRadius: 14,
+    padding: 3,
+    borderWidth: 1.5,
+    borderColor: Colors.border,
+  },
+  poiMarkerSelected: {
+    borderColor: Colors.primary,
+    backgroundColor: Colors.primaryLight,
+  },
+  poiMarkerIcon: { fontSize: 18 },
+
   indexBadge: {
     position: 'absolute', top: 10, left: 10,
     backgroundColor: 'rgba(255,255,255,0.92)',
@@ -236,12 +283,12 @@ const styles = StyleSheet.create({
   cardContent: { padding: 16 },
   cardName: {
     fontSize: 17, fontWeight: '700',
-    color: Colors.text, marginBottom: 10,
+    color: Colors.text, marginBottom: 8,
     letterSpacing: -0.2,
   },
   cardNameSelected: { color: Colors.primaryDark },
 
-  statsRow: { flexDirection: 'row', gap: 6, marginBottom: 12, flexWrap: 'wrap' },
+  statsRow: { flexDirection: 'row', gap: 6, marginBottom: 10, flexWrap: 'wrap' },
   statPill: {
     backgroundColor: Colors.background,
     borderRadius: Radii.full,
@@ -288,5 +335,6 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     ...Shadows.md,
   },
+  startBtnDisabled: { opacity: 0.55 },
   startBtnText: { color: '#fff', fontSize: 16, fontWeight: '700', letterSpacing: 0.2 },
 });

@@ -1,6 +1,41 @@
-import { Coordinates, PointOfInterest } from '@/types';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+
+import { Coordinates } from '@/types';
 
 const API_KEY = process.env.EXPO_PUBLIC_GOOGLE_MAPS_API_KEY!;
+
+// ─── Cache Places Nearby ────────────────────────────────────────────────────
+const PLACES_CACHE_TTL = 24 * 60 * 60 * 1000; // 24h en ms
+const PLACES_CACHE_PREFIX = '@strollify/places_v1_';
+
+// Arrondi à ~500m pour maximiser les cache hits de requêtes proches
+function tileKey(lat: number, lng: number, radius: number, type: string): string {
+  const precision = radius >= 2000 ? 2 : 3; // ~1.1km ou ~110m de granularité
+  return `${PLACES_CACHE_PREFIX}${lat.toFixed(precision)}_${lng.toFixed(precision)}_${radius}_${type}`;
+}
+
+interface PlacesCache {
+  expiry: number;
+  results: NearbyPlacesResult[];
+}
+
+async function getCachedPlaces(key: string): Promise<NearbyPlacesResult[] | null> {
+  try {
+    const raw = await AsyncStorage.getItem(key);
+    if (!raw) return null;
+    const cached: PlacesCache = JSON.parse(raw);
+    if (Date.now() > cached.expiry) { AsyncStorage.removeItem(key); return null; }
+    return cached.results;
+  } catch { return null; }
+}
+
+async function setCachedPlaces(key: string, results: NearbyPlacesResult[]): Promise<void> {
+  try {
+    const payload: PlacesCache = { expiry: Date.now() + PLACES_CACHE_TTL, results };
+    await AsyncStorage.setItem(key, JSON.stringify(payload));
+  } catch {}
+}
+// ────────────────────────────────────────────────────────────────────────────
 
 // Décode une polyline encodée Google en tableau de coordonnées
 export function decodePolyline(encoded: string): Coordinates[] {
@@ -105,6 +140,11 @@ export async function getNearbyPlaces(
   radiusMeters: number,
   type: string
 ): Promise<NearbyPlacesResult[]> {
+  const key = tileKey(location.latitude, location.longitude, radiusMeters, type);
+
+  const cached = await getCachedPlaces(key);
+  if (cached) return cached;
+
   const url =
     `https://maps.googleapis.com/maps/api/place/nearbysearch/json` +
     `?location=${location.latitude},${location.longitude}` +
@@ -117,17 +157,23 @@ export async function getNearbyPlaces(
     throw new Error(`Places API error: ${data.status}`);
   }
 
-  return (data.results || []).slice(0, 10).map((place: any) => ({
-    placeId: place.place_id,
-    name: place.name,
-    coordinates: {
-      latitude: place.geometry.location.lat,
-      longitude: place.geometry.location.lng,
-    },
-    address: place.vicinity || '',
-    rating: place.rating,
-    types: place.types || [],
-  }));
+  const results: NearbyPlacesResult[] = (data.results || [])
+    .sort((a: any, b: any) => (b.rating ?? 0) - (a.rating ?? 0))
+    .slice(0, 8)
+    .map((place: any) => ({
+      placeId: place.place_id,
+      name: place.name,
+      coordinates: {
+        latitude: place.geometry.location.lat,
+        longitude: place.geometry.location.lng,
+      },
+      address: place.vicinity || '',
+      rating: place.rating,
+      types: place.types || [],
+    }));
+
+  await setCachedPlaces(key, results);
+  return results;
 }
 
 export interface AutocompleteSuggestion {
@@ -157,18 +203,4 @@ export async function getAddressSuggestions(
     mainText: p.structured_formatting?.main_text ?? p.description,
     secondaryText: p.structured_formatting?.secondary_text ?? '',
   }));
-}
-
-export async function getPlaceCoordinates(placeId: string): Promise<Coordinates | null> {
-  const url =
-    `https://maps.googleapis.com/maps/api/place/details/json` +
-    `?place_id=${placeId}&fields=geometry&key=${API_KEY}`;
-
-  const response = await fetch(url);
-  const data = await response.json();
-
-  if (data.status !== 'OK') return null;
-  const loc = data.result?.geometry?.location;
-  if (!loc) return null;
-  return { latitude: loc.lat, longitude: loc.lng };
 }

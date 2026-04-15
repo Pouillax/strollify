@@ -1,6 +1,6 @@
 import BottomSheet, { BottomSheetScrollView } from '@gorhom/bottom-sheet';
 import { useRouter } from 'expo-router';
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -15,7 +15,8 @@ import MapView, { PROVIDER_GOOGLE } from 'react-native-maps';
 import AddressInput from '@/components/AddressInput';
 import { POI_CATEGORIES } from '@/constants/poi-categories';
 import { Colors, Radii, Shadows } from '@/constants/theme';
-import { generateRouteOptions } from '@/services/ai';
+import { generateRouteProposals } from '@/services/ai';
+import { computePersonalCadence, getWalks } from '@/services/history';
 import {
   geocodeAddress,
   getCurrentLocation,
@@ -25,7 +26,14 @@ import {
 } from '@/services/location';
 import { Coordinates, WalkConfig } from '@/types';
 
+
 const STEP_PRESETS = [2000, 5000, 8000, 10000];
+const DURATION_PRESETS = [15, 30, 45, 60];
+const SHEET_SNAP_POINTS = ['72%'];
+const MAX_STEPS = 30000;
+const MAX_DURATION = 180; // minutes
+const DEFAULT_STEPS_PER_METER = 1 / 0.75; // plancher de base : ~1.333 pas/m
+const WALK_SPEED_MPS = 1.35; // vitesse de marche moyenne en m/s
 
 export default function HomeScreen() {
   const router = useRouter();
@@ -37,15 +45,21 @@ export default function HomeScreen() {
   const [startCoords, setStartCoords] = useState<Coordinates | null>(null);
   const [endAddress, setEndAddress] = useState('');
   const [endCoords, setEndCoords] = useState<Coordinates | null>(null);
+  const [stepsPerMeter, setStepsPerMeter] = useState(DEFAULT_STEPS_PER_METER);
+  const [goalMode, setGoalMode] = useState<'steps' | 'duration'>('steps');
   const [steps, setSteps] = useState(5000);
   const [customSteps, setCustomSteps] = useState('');
+  const [duration, setDuration] = useState(30);
+  const [customDuration, setCustomDuration] = useState('');
   const [selectedCategories, setSelectedCategories] = useState<string[]>(['park', 'cafe']);
   const [loading, setLoading] = useState(false);
 
-  const snapPoints = useMemo(() => ['22%', '72%'], []);
-
   useEffect(() => {
     (async () => {
+      // Charger la cadence personnalisée depuis l'historique
+      const walks = await getWalks();
+      setStepsPerMeter(computePersonalCadence(walks));
+
       const granted = await requestLocationPermission();
       if (!granted) {
         Alert.alert('Permission refusée', 'Walkify a besoin de votre position pour fonctionner.');
@@ -53,6 +67,7 @@ export default function HomeScreen() {
       }
       const coords = await getCurrentLocation();
       setUserLocation(coords);
+      setStartCoords(coords);
       const address = await reverseGeocode(coords);
       setStartAddress(address);
       mapRef.current?.animateToRegion({
@@ -68,6 +83,11 @@ export default function HomeScreen() {
       prev.includes(id) ? prev.filter(c => c !== id) : [...prev, id]
     );
   }, []);
+
+  const stepsPerMinute = Math.round(stepsPerMeter * WALK_SPEED_MPS * 60);
+  const effectiveSteps = Math.min(customSteps ? parseInt(customSteps) || steps : steps, MAX_STEPS);
+  const effectiveDuration = Math.min(customDuration ? parseInt(customDuration) || duration : duration, MAX_DURATION);
+  const effectiveStepsForConfig = goalMode === 'duration' ? effectiveDuration * stepsPerMinute : effectiveSteps;
 
   const handleGenerate = useCallback(async () => {
     if (!userLocation && !startAddress) {
@@ -94,20 +114,21 @@ export default function HomeScreen() {
       }
 
       const config: WalkConfig = {
-        steps,
-        startCoordinates: startCoords,
+        steps: effectiveStepsForConfig,
+        durationMinutesTarget: goalMode === 'duration' ? effectiveDuration : undefined,
+        startCoordinates: resolvedStart,
         startAddress,
-        endCoordinates: endCoords,
+        endCoordinates: resolvedEnd,
         endAddress: endAddress || undefined,
         selectedCategories,
       };
 
-      const options = await generateRouteOptions(config);
+      const proposals = await generateRouteProposals(config);
 
       router.push({
         pathname: '/route-options',
         params: {
-          options: JSON.stringify(options),
+          proposals: JSON.stringify(proposals),
           config: JSON.stringify(config),
         },
       });
@@ -116,9 +137,7 @@ export default function HomeScreen() {
     } finally {
       setLoading(false);
     }
-  }, [userLocation, startAddress, endAddress, steps, selectedCategories, router]);
-
-  const effectiveSteps = customSteps ? parseInt(customSteps) || steps : steps;
+  }, [userLocation, startAddress, endAddress, effectiveStepsForConfig, effectiveDuration, goalMode, selectedCategories, router]);
 
   const handleResetLocation = useCallback(async () => {
     if (!userLocation) return;
@@ -146,69 +165,146 @@ export default function HomeScreen() {
       <BottomSheet
         ref={sheetRef}
         index={0}
-        snapPoints={snapPoints}
+        snapPoints={SHEET_SNAP_POINTS}
+        enablePanDownToClose={false}
         backgroundStyle={styles.sheetBackground}
         handleIndicatorStyle={styles.sheetHandle}
       >
         <BottomSheetScrollView contentContainerStyle={styles.sheetContent}>
 
-          <Text style={styles.title}>Nouvelle promenade</Text>
-
-          {/* Adresses */}
-          <Text style={styles.label}>Départ</Text>
-          <View style={styles.inputRow}>
-            <TextInput
-              style={[styles.input, styles.inputFlex]}
-              placeholder="Position actuelle"
-              placeholderTextColor={Colors.placeholder}
-              value={startAddress}
-              onChangeText={setStartAddress}
-            />
-            <Pressable style={styles.locationBtn} onPress={handleResetLocation}>
-              <Text style={styles.locationBtnIcon}>📍</Text>
+          <View style={styles.sheetTitleRow}>
+            <Text style={styles.title}>Nouvelle promenade</Text>
+            <Pressable style={styles.historyBtn} onPress={() => router.push('/history' as any)}>
+              <Text style={styles.historyBtnIcon}>🕐</Text>
             </Pressable>
           </View>
 
-          <Text style={styles.label}>
-            Arrivée <Text style={styles.optional}>(optionnel)</Text>
-          </Text>
-          <TextInput
-            style={styles.input}
-            placeholder="Adresse d'arrivée"
-            placeholderTextColor={Colors.placeholder}
-            value={endAddress}
-            onChangeText={setEndAddress}
-          />
+          {/* Adresses */}
+          <View style={styles.addressSection}>
+            <Text style={styles.label}>Départ</Text>
+            <View style={[styles.inputRow, styles.startInputRow]}>
+              <View style={styles.inputFlex}>
+                <AddressInput
+                  value={startAddress}
+                  onChangeText={setStartAddress}
+                  onSelectPlace={(address, coords) => {
+                    setStartAddress(address);
+                    setStartCoords(coords);
+                  }}
+                  placeholder="Position actuelle"
+                />
+              </View>
+              <Pressable style={styles.locationBtn} onPress={handleResetLocation}>
+                <Text style={styles.locationBtnIcon}>📍</Text>
+              </Pressable>
+            </View>
 
-          {/* Pas */}
-          <Text style={styles.label}>Objectif de pas</Text>
-          <View style={styles.presetsRow}>
-            {STEP_PRESETS.map(preset => {
-              const active = steps === preset && !customSteps;
-              return (
-                <Pressable
-                  key={preset}
-                  style={[styles.presetBtn, active && styles.presetBtnActive]}
-                  onPress={() => { setSteps(preset); setCustomSteps(''); }}
-                >
-                  <Text style={[styles.presetText, active && styles.presetTextActive]}>
-                    {preset >= 1000 ? `${preset / 1000}k` : preset}
-                  </Text>
-                </Pressable>
-              );
-            })}
+            <Text style={styles.label}>
+              Arrivée <Text style={styles.optional}>(optionnel)</Text>
+            </Text>
+            <View style={styles.endInputRow}>
+              <AddressInput
+                value={endAddress}
+                onChangeText={setEndAddress}
+                onSelectPlace={(address, coords) => {
+                  setEndAddress(address);
+                  setEndCoords(coords);
+                }}
+                placeholder="Adresse d'arrivée"
+              />
+            </View>
           </View>
-          <TextInput
-            style={styles.input}
-            placeholder="Nombre personnalisé..."
-            placeholderTextColor={Colors.placeholder}
-            keyboardType="numeric"
-            value={customSteps}
-            onChangeText={setCustomSteps}
-          />
-          <Text style={styles.distance}>
-            ≈ {(stepsToMeters(effectiveSteps) / 1000).toFixed(1)} km
-          </Text>
+
+          {/* Toggle mode */}
+          <Text style={styles.label}>Objectif</Text>
+          <View style={styles.modeToggle}>
+            <Pressable
+              style={[styles.modeBtn, goalMode === 'steps' && styles.modeBtnActive]}
+              onPress={() => setGoalMode('steps')}
+            >
+              <Text style={[styles.modeBtnText, goalMode === 'steps' && styles.modeBtnTextActive]}>👟 Pas</Text>
+            </Pressable>
+            <Pressable
+              style={[styles.modeBtn, goalMode === 'duration' && styles.modeBtnActive]}
+              onPress={() => setGoalMode('duration')}
+            >
+              <Text style={[styles.modeBtnText, goalMode === 'duration' && styles.modeBtnTextActive]}>⏱ Durée</Text>
+            </Pressable>
+          </View>
+
+          {goalMode === 'steps' ? (
+            <>
+              <View style={styles.presetsRow}>
+                {STEP_PRESETS.map(preset => {
+                  const active = steps === preset && !customSteps;
+                  return (
+                    <Pressable
+                      key={preset}
+                      style={[styles.presetBtn, active && styles.presetBtnActive]}
+                      onPress={() => { setSteps(preset); setCustomSteps(''); }}
+                    >
+                      <Text style={[styles.presetText, active && styles.presetTextActive]}>
+                        {preset >= 1000 ? `${preset / 1000}k` : preset}
+                      </Text>
+                    </Pressable>
+                  );
+                })}
+              </View>
+              <TextInput
+                style={styles.input}
+                placeholder="Nombre de pas personnalisé..."
+                placeholderTextColor={Colors.placeholder}
+                keyboardType="numeric"
+                value={customSteps}
+                onChangeText={(text) => {
+                  const num = parseInt(text) || 0;
+                  setCustomSteps(num > MAX_STEPS ? String(MAX_STEPS) : text);
+                }}
+              />
+              {customSteps !== '' && parseInt(customSteps) >= MAX_STEPS && (
+                <Text style={styles.maxStepsHint}>Maximum : {MAX_STEPS.toLocaleString('fr-FR')} pas (≈ 22,5 km)</Text>
+              )}
+              <Text style={styles.distance}>
+                ≈ {(effectiveSteps / stepsPerMeter / 1000).toFixed(1)} km · ~{Math.round(effectiveSteps / stepsPerMinute)} min
+              </Text>
+            </>
+          ) : (
+            <>
+              <View style={styles.presetsRow}>
+                {DURATION_PRESETS.map(preset => {
+                  const active = duration === preset && !customDuration;
+                  return (
+                    <Pressable
+                      key={preset}
+                      style={[styles.presetBtn, active && styles.presetBtnActive]}
+                      onPress={() => { setDuration(preset); setCustomDuration(''); }}
+                    >
+                      <Text style={[styles.presetText, active && styles.presetTextActive]}>
+                        {preset}min
+                      </Text>
+                    </Pressable>
+                  );
+                })}
+              </View>
+              <TextInput
+                style={styles.input}
+                placeholder="Durée personnalisée (minutes)..."
+                placeholderTextColor={Colors.placeholder}
+                keyboardType="numeric"
+                value={customDuration}
+                onChangeText={(text) => {
+                  const num = parseInt(text) || 0;
+                  setCustomDuration(num > MAX_DURATION ? String(MAX_DURATION) : text);
+                }}
+              />
+              {customDuration !== '' && parseInt(customDuration) >= MAX_DURATION && (
+                <Text style={styles.maxStepsHint}>Maximum : {MAX_DURATION} min</Text>
+              )}
+              <Text style={styles.distance}>
+                ≈ {(effectiveDuration * stepsPerMinute / stepsPerMeter / 1000).toFixed(1)} km · ~{(effectiveDuration * stepsPerMinute).toLocaleString('fr-FR')} pas
+              </Text>
+            </>
+          )}
 
           {/* Catégories */}
           <Text style={styles.label}>Lieux d'intérêt</Text>
@@ -260,14 +356,30 @@ const styles = StyleSheet.create({
   sheetHandle: { backgroundColor: Colors.border, width: 36 },
   sheetContent: { paddingHorizontal: 22, paddingBottom: 48 },
 
+  sheetTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 20,
+    marginTop: 6,
+  },
   title: {
     fontSize: 22,
     fontWeight: '700',
     color: Colors.text,
-    marginBottom: 20,
-    marginTop: 6,
     letterSpacing: -0.3,
   },
+  historyBtn: {
+    width: 40,
+    height: 40,
+    borderRadius: Radii.md,
+    borderWidth: 1.5,
+    borderColor: Colors.border,
+    backgroundColor: Colors.background,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  historyBtnIcon: { fontSize: 20 },
   label: {
     fontSize: 13,
     fontWeight: '600',
@@ -278,6 +390,9 @@ const styles = StyleSheet.create({
     letterSpacing: 0.5,
   },
   optional: { fontWeight: '400', textTransform: 'none', letterSpacing: 0 },
+  addressSection: { zIndex: 20 },
+  startInputRow: { zIndex: 12 },
+  endInputRow: { zIndex: 11 },
   inputRow: { flexDirection: 'row', gap: 8, alignItems: 'center' },
   inputFlex: { flex: 1 },
   input: {
@@ -306,6 +421,34 @@ const styles = StyleSheet.create({
     fontWeight: '500',
     marginTop: 6,
   },
+  maxStepsHint: {
+    fontSize: 12,
+    color: Colors.error,
+    marginTop: 4,
+    fontWeight: '500',
+  },
+
+  modeToggle: {
+    flexDirection: 'row',
+    gap: 8,
+    marginBottom: 14,
+    backgroundColor: Colors.background,
+    borderRadius: Radii.lg,
+    borderWidth: 1.5,
+    borderColor: Colors.border,
+    padding: 4,
+  },
+  modeBtn: {
+    flex: 1,
+    paddingVertical: 8,
+    borderRadius: Radii.md,
+    alignItems: 'center',
+  },
+  modeBtnActive: {
+    backgroundColor: Colors.primary,
+  },
+  modeBtnText: { fontSize: 14, fontWeight: '600', color: Colors.textSecondary },
+  modeBtnTextActive: { color: '#fff' },
 
   presetsRow: { flexDirection: 'row', gap: 8, marginBottom: 10 },
   presetBtn: {

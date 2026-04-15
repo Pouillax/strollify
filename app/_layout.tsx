@@ -10,6 +10,7 @@ export default function RootLayout() {
         <Stack.Screen name="route-options" />
         <Stack.Screen name="route-preview" />
         <Stack.Screen name="walk" />
+        <Stack.Screen name="history" />
       </Stack>
       <StatusBar style="auto" />
     </GestureHandlerRootView>
