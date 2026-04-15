@@ -4,6 +4,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   ActivityIndicator,
   Alert,
+  Keyboard,
   Pressable,
   StyleSheet,
   Text,
@@ -41,8 +42,10 @@ export default function HomeScreen() {
   const [customSteps, setCustomSteps] = useState('');
   const [selectedCategories, setSelectedCategories] = useState<string[]>(['park', 'cafe']);
   const [loading, setLoading] = useState(false);
+  const [customStepsFocused, setCustomStepsFocused] = useState(false);
 
-  const snapPoints = useMemo(() => ['22%', '72%'], []);
+  const snapPoints = useMemo(() => ['22%', '95%'], []);
+  const [sheetIndex, setSheetIndex] = useState(0);
 
   useEffect(() => {
     (async () => {
@@ -93,11 +96,12 @@ export default function HomeScreen() {
         if (geocoded) resolvedEnd = geocoded;
       }
 
+      const resolvedSteps = customSteps ? Math.min(parseInt(customSteps) || steps, 50000) : steps;
       const config: WalkConfig = {
-        steps,
-        startCoordinates: startCoords,
+        steps: resolvedSteps,
+        startCoordinates: resolvedStart,
         startAddress,
-        endCoordinates: endCoords,
+        endCoordinates: resolvedEnd,
         endAddress: endAddress || undefined,
         selectedCategories,
       };
@@ -116,7 +120,7 @@ export default function HomeScreen() {
     } finally {
       setLoading(false);
     }
-  }, [userLocation, startAddress, endAddress, steps, selectedCategories, router]);
+  }, [userLocation, startAddress, endAddress, steps, customSteps, selectedCategories, router]);
 
   const effectiveSteps = customSteps ? parseInt(customSteps) || steps : steps;
 
@@ -149,36 +153,56 @@ export default function HomeScreen() {
         snapPoints={snapPoints}
         backgroundStyle={styles.sheetBackground}
         handleIndicatorStyle={styles.sheetHandle}
+        onChange={setSheetIndex}
       >
-        <BottomSheetScrollView contentContainerStyle={styles.sheetContent}>
+        <BottomSheetScrollView
+          contentContainerStyle={styles.sheetContent}
+          scrollEnabled={sheetIndex === 1}
+        >
+          {sheetIndex === 0 && (
+            <Pressable
+              style={StyleSheet.absoluteFill}
+              onPress={() => sheetRef.current?.expand()}
+            />
+          )}
 
           <Text style={styles.title}>Nouvelle promenade</Text>
 
           {/* Adresses */}
-          <Text style={styles.label}>Départ</Text>
-          <View style={styles.inputRow}>
-            <TextInput
-              style={[styles.input, styles.inputFlex]}
-              placeholder="Position actuelle"
-              placeholderTextColor={Colors.placeholder}
-              value={startAddress}
-              onChangeText={setStartAddress}
-            />
-            <Pressable style={styles.locationBtn} onPress={handleResetLocation}>
-              <Text style={styles.locationBtnIcon}>📍</Text>
-            </Pressable>
+          <View style={styles.addressBlock}>
+            <Text style={styles.label}>Départ</Text>
+            <View style={styles.inputRow}>
+              <View style={styles.inputFlex}>
+                <AddressInput
+                  value={startAddress}
+                  onChangeText={(text) => { setStartAddress(text); setStartCoords(null); }}
+                  onSelectPlace={(address, coords) => {
+                    setStartAddress(address);
+                    setStartCoords(coords);
+                  }}
+                  placeholder="Position actuelle"
+                />
+              </View>
+              <Pressable style={styles.locationBtn} onPress={handleResetLocation}>
+                <Text style={styles.locationBtnIcon}>📍</Text>
+              </Pressable>
+            </View>
           </View>
 
-          <Text style={styles.label}>
-            Arrivée <Text style={styles.optional}>(optionnel)</Text>
-          </Text>
-          <TextInput
-            style={styles.input}
-            placeholder="Adresse d'arrivée"
-            placeholderTextColor={Colors.placeholder}
-            value={endAddress}
-            onChangeText={setEndAddress}
-          />
+          <View style={styles.addressBlockLower}>
+            <Text style={styles.label}>
+              Arrivée <Text style={styles.optional}>(optionnel)</Text>
+            </Text>
+            <AddressInput
+              value={endAddress}
+              onChangeText={(text) => { setEndAddress(text); setEndCoords(null); }}
+              onSelectPlace={(address, coords) => {
+                setEndAddress(address);
+                setEndCoords(coords);
+              }}
+              placeholder="Adresse d'arrivée"
+            />
+          </View>
 
           {/* Pas */}
           <Text style={styles.label}>Objectif de pas</Text>
@@ -198,14 +222,30 @@ export default function HomeScreen() {
               );
             })}
           </View>
-          <TextInput
-            style={styles.input}
-            placeholder="Nombre personnalisé..."
-            placeholderTextColor={Colors.placeholder}
-            keyboardType="numeric"
-            value={customSteps}
-            onChangeText={setCustomSteps}
-          />
+          <View style={styles.customStepsRow}>
+            <TextInput
+              style={[styles.input, styles.inputFlex]}
+              placeholder="Nombre personnalisé..."
+              placeholderTextColor={Colors.placeholder}
+              keyboardType="numeric"
+              value={customSteps}
+              onFocus={() => setCustomStepsFocused(true)}
+              onBlur={() => setCustomStepsFocused(false)}
+              onChangeText={(text) => {
+                if (text === '') { setCustomSteps(''); return; }
+                if (!/^\d+$/.test(text)) return;
+                const num = parseInt(text);
+                setCustomSteps(num > 50000 ? '50000' : text);
+              }}
+            />
+            {customStepsFocused ? (
+              <Pressable style={styles.keyboardDismissBtn} onPress={Keyboard.dismiss}>
+                <Text style={styles.keyboardDismissText}>OK</Text>
+              </Pressable>
+            ) : (
+              <Text style={styles.capLabel}>max 50 000</Text>
+            )}
+          </View>
           <Text style={styles.distance}>
             ≈ {(stepsToMeters(effectiveSteps) / 1000).toFixed(1)} km
           </Text>
@@ -244,6 +284,7 @@ export default function HomeScreen() {
 
         </BottomSheetScrollView>
       </BottomSheet>
+
     </View>
   );
 }
@@ -251,6 +292,8 @@ export default function HomeScreen() {
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: Colors.background },
   map: { flex: 1 },
+  addressBlock: { zIndex: 2 },
+  addressBlockLower: { zIndex: 1 },
 
   sheetBackground: {
     backgroundColor: Colors.card,
@@ -306,6 +349,17 @@ const styles = StyleSheet.create({
     fontWeight: '500',
     marginTop: 6,
   },
+
+  customStepsRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+  capLabel: { fontSize: 11, color: Colors.textMuted, flexShrink: 0 },
+  keyboardDismissBtn: {
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: Radii.md,
+    backgroundColor: Colors.primary,
+    flexShrink: 0,
+  },
+  keyboardDismissText: { fontSize: 13, fontWeight: '700', color: '#fff' },
 
   presetsRow: { flexDirection: 'row', gap: 8, marginBottom: 10 },
   presetBtn: {

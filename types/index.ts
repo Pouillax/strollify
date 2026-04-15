@@ -6,8 +6,11 @@ export interface Coordinates {
 export interface PoiCategory {
   id: string;
   label: string;
-  googleType: string;
+  googleType?: string;
   icon: string;
+  keyword?: string;
+  additionalGoogleTypes?: string[];
+  excludeTypes?: string[];
 }
 
 export interface PointOfInterest {

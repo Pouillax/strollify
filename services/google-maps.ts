@@ -1,4 +1,4 @@
-import { Coordinates, PointOfInterest } from '@/types';
+import { Coordinates } from '@/types';
 
 const API_KEY = process.env.EXPO_PUBLIC_GOOGLE_MAPS_API_KEY!;
 
@@ -103,12 +103,16 @@ export interface NearbyPlacesResult {
 export async function getNearbyPlaces(
   location: Coordinates,
   radiusMeters: number,
-  type: string
+  type: string | undefined,
+  keyword?: string,
+  excludeTypes?: string[]
 ): Promise<NearbyPlacesResult[]> {
-  const url =
+  let url =
     `https://maps.googleapis.com/maps/api/place/nearbysearch/json` +
     `?location=${location.latitude},${location.longitude}` +
-    `&radius=${radiusMeters}&type=${type}&key=${API_KEY}`;
+    `&radius=${radiusMeters}&key=${API_KEY}`;
+  if (type) url += `&type=${type}`;
+  if (keyword) url += `&keyword=${encodeURIComponent(keyword)}`;
 
   const response = await fetch(url);
   const data = await response.json();
@@ -117,17 +121,23 @@ export async function getNearbyPlaces(
     throw new Error(`Places API error: ${data.status}`);
   }
 
-  return (data.results || []).slice(0, 10).map((place: any) => ({
-    placeId: place.place_id,
-    name: place.name,
-    coordinates: {
-      latitude: place.geometry.location.lat,
-      longitude: place.geometry.location.lng,
-    },
-    address: place.vicinity || '',
-    rating: place.rating,
-    types: place.types || [],
-  }));
+  return (data.results || [])
+    .filter((place: any) => {
+      if (!excludeTypes || excludeTypes.length === 0) return true;
+      return !place.types?.some((t: string) => excludeTypes.includes(t));
+    })
+    .slice(0, 10)
+    .map((place: any) => ({
+      placeId: place.place_id,
+      name: place.name,
+      coordinates: {
+        latitude: place.geometry.location.lat,
+        longitude: place.geometry.location.lng,
+      },
+      address: place.vicinity || '',
+      rating: place.rating,
+      types: place.types || [],
+    }));
 }
 
 export interface AutocompleteSuggestion {

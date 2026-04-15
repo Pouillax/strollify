@@ -1,11 +1,11 @@
 {
   "expo": {
-    "name": "Walkify",
-    "slug": "walkify",
+    "name": "Strollify",
+    "slug": "strollify",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
-    "scheme": "walkify",
+    "scheme": "strollify",
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
     "ios": {
@@ -14,8 +14,8 @@
         "googleMapsApiKey": "${EXPO_PUBLIC_GOOGLE_MAPS_API_KEY}"
       },
       "infoPlist": {
-        "NSLocationWhenInUseUsageDescription": "Walkify utilise votre position pour générer des parcours de marche autour de vous.",
-        "NSLocationAlwaysUsageDescription": "Walkify utilise votre position pour suivre votre marche."
+        "NSLocationWhenInUseUsageDescription": "Strollify utilise votre position pour générer des parcours de marche autour de vous.",
+        "NSLocationAlwaysUsageDescription": "Strollify utilise votre position pour suivre votre marche."
       }
     },
     "android": {
@@ -46,7 +46,7 @@
       [
         "expo-location",
         {
-          "locationAlwaysAndWhenInUsePermission": "Walkify utilise votre position pour générer et suivre vos parcours de marche."
+          "locationAlwaysAndWhenInUsePermission": "Strollify utilise votre position pour générer et suivre vos parcours de marche."
         }
       ],
       [
